@@ -26,6 +26,7 @@ include(UseLibCXX)
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto SSL)
 find_package(nlohmann_json "3.6.1" REQUIRED)
+find_package(Lua REQUIRED)
 
 if (NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Choose the type of build {Debug, Release}." FORCE)
@@ -42,7 +43,7 @@ if (IRODS_BUILD_WITH_WERROR)
   add_compile_options(-Werror)
 endif()
 
-set(RULE_ENGINE_PLUGIN_NAME irods_rule_engine_plugin-nop)
+set(RULE_ENGINE_PLUGIN_NAME irods_rule_engine_plugin-lua)
 
 add_library(${RULE_ENGINE_PLUGIN_NAME} MODULE "${CMAKE_CURRENT_SOURCE_DIR}/src/main.cpp")
 
@@ -61,7 +62,9 @@ target_include_directories(
     ${IRODS_INCLUDE_DIRS}
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/include"
     "${IRODS_EXTERNALS_FULLPATH_SPDLOG}/include"
-    "${IRODS_EXTERNALS_FULLPATH_FMT}/include")
+    "${IRODS_EXTERNALS_FULLPATH_FMT}/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    "${LUA_INCLUDE_DIR}")
 
 target_link_libraries(
     ${RULE_ENGINE_PLUGIN_NAME}
@@ -70,6 +73,7 @@ target_link_libraries(
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_filesystem.so"
     "${IRODS_EXTERNALS_FULLPATH_BOOST}/lib/libboost_system.so"
     "${IRODS_EXTERNALS_FULLPATH_FMT}/lib/libfmt.so"
+    "${LUA_LIBRARIES}"
     ${CMAKE_DL_LIBS})
 
 install(TARGETS ${RULE_ENGINE_PLUGIN_NAME} LIBRARY DESTINATION "${IRODS_PLUGINS_DIRECTORY}/rule_engines")
@@ -82,7 +86,7 @@ install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/run_project_template_cpp_ru
         DESTINATION "${IRODS_HOME_DIRECTORY}/scripts"
         PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
 
-set(PLUGIN_PACKAGE_NAME irods-rule-engine-plugin-nop)
+set(PLUGIN_PACKAGE_NAME irods-rule-engine-plugin-lua)
 
 include(IrodsCPackCommon)
 

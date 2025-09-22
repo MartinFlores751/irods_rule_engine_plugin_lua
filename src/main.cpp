@@ -14,8 +14,14 @@
 #include <algorithm>
 #include <optional>
 
+#include <sol/sol.hpp>
+
+#include "converter.hpp"
+
 namespace
 {
+	static sol::bytecode core_file;
+	static thread_local sol::state lua_state;
 	using log_rule_engine = irods::experimental::log::rule_engine;
 
 	auto get_rei(irods::callback& _effect_handler) -> ruleExecInfo_t&
@@ -39,11 +45,33 @@ namespace
 
 	auto start(irods::default_re_ctx&, const std::string& _instance_name) -> irods::error
 	{
+		sol::state loader;
+		sol::load_result some_script;
 		//
 		// Initialize the plugin instance here.
 		//
+		some_script = loader.load_file("/etc/irods/core.lua");
+		if (!some_script.valid()) {
+			sol::error err{some_script};
+			log_rule_engine::error("[{}]: Issue loading script: [{}]", __func__, err.what());
+			return ERROR(SYS_INTERNAL_ERR, err.what());
+		}
+		sol::protected_function code_as_func = some_script;
+		core_file = code_as_func.dump();
 
-		log_rule_engine::info("NOP rule engine plugin started [start].");
+		// Try to front-load loading of things
+		lua_state.open_libraries(sol::lib::base);
+
+		auto res{lua_state.safe_script(core_file.as_string_view(), sol::script_pass_on_error)};
+
+		if (!res.valid()) {
+			sol::error error_info{res};
+			log_rule_engine::error(
+				"[{}]: An error processing the script has occurred: [{}]", __func__, error_info.what());
+			return ERROR(SYS_INTERNAL_ERR, error_info.what());
+		}
+
+		log_rule_engine::info("[{}]: Rule engine plugin started.", __func__);
 
 		return SUCCESS();
 	} // start
@@ -65,9 +93,14 @@ namespace
 		// Set "_exists" to true if "_rule_name" is supported by this plugin.
 		//
 
-		log_rule_engine::info("NOP rule engine plugin does not provide any rules [rule_exists].");
-
-		_exists = false;
+		if (!lua_state[_rule_name].valid()) {
+			// log_rule_engine::info("[{}]: Rule [{}] does not exist.", __func__, _rule_name);
+			_exists = false;
+		}
+		else {
+			log_rule_engine::info("[{}]: Found rule [{}].", __func__, _rule_name);
+			_exists = true;
+		}
 
 		return SUCCESS();
 	} // rule_exists
@@ -79,10 +112,38 @@ namespace
 		//
 
 		log_rule_engine::info("NOP rule engine plugin does not provide any rules [list_rules].");
+		lua_state.for_each([&_rules, &func = __func__](const sol::object& key, const sol::object& value) {
+			if (sol::type::function == value.get_type()) {
+				auto function_name{key.as<std::string>()};
+				log_rule_engine::debug("[{}]: Found function [{}].", func, function_name);
+				_rules.push_back(function_name);
+			}
+		});
 
 		return SUCCESS();
 	} // list_rules
 
+  template <typename... CapturedArgs>
+  struct argsBuilder {
+    using CapturedArgsTuple = std::tuple<std::decay_t<CapturedArgs>...>;
+
+	template <typename... Args>
+	static auto capture_by_copy(Args&&... args)
+	{
+	  return std::tuple<std::decay_t<Args>...>(std::forward<Args>(args)...);
+	}
+    std::tuple<CapturedArgs...> args;
+
+    argsBuilder(CapturedArgs&&... a) : args{a...} {
+    }
+    template<typename... NewArgs>
+    auto operator()(NewArgs&&... b) const {
+      auto new_thing{capture_by_copy(b...)};
+      auto all_thing{std::tuple_cat(args, std::move(new_thing))};
+      return argsBuilder<CapturedArgs..., NewArgs...>(all_thing);
+    }
+  };
+  
 	auto exec_rule(irods::default_re_ctx&,
 	               const std::string& _rule_name,
 	               std::list<boost::any>& _rule_arguments,
@@ -93,7 +154,18 @@ namespace
 		// Think of this as calling "_rule_name(_rule_arguments_0, _rule_arguments_1, ..., _rule_arguments_N)".
 		//
 
-		log_rule_engine::info("NOP rule engine plugin does not provide any rules [exec_rule].");
+		log_rule_engine::info("[{}]: Trying to run func [{}] from luaville.", __func__, _rule_name);
+
+		argsBuilder thang;
+	        for (auto& rule_arg : _rule_arguments) {
+		  thang = thang(object_from_any(rule_arg));
+		}
+
+		// If we get to `exec_rule(...)`, assume the function exists
+		sol::function test_func{lua_state[_rule_name]};
+		std::string cool_text{std::apply(test_func, thang.args)};
+
+		log_rule_engine::debug("[{}]: Get back [{}] from [{}].", __func__, cool_text, _rule_name);
 
 		return SUCCESS();
 	} // exec_rule
